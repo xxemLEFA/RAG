@@ -3,6 +3,8 @@ package com.repository.repositoryback.service;
 import com.repository.repositoryback.config.KnowledgeProperties;
 import com.repository.repositoryback.config.VectorRagProperties;
 import com.repository.repositoryback.dto.AiRagResponse;
+import com.repository.repositoryback.dto.KnowledgeFileItem;
+import com.repository.repositoryback.dto.KnowledgeOverviewResponse;
 import com.repository.repositoryback.dto.RagSourceItem;
 import org.springframework.stereotype.Service;
 
@@ -10,6 +12,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -23,6 +28,8 @@ import java.util.stream.Stream;
 public class VectorRagService {
 
     private static final String NO_KNOWLEDGE_ANSWER = "资料中未找到相关信息。";
+    private static final DateTimeFormatter TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
 
     private final KnowledgeProperties knowledgeProperties;
     private final VectorRagProperties vectorRagProperties;
@@ -76,33 +83,84 @@ public class VectorRagService {
         return new AiRagResponse(answer, new ArrayList<>(sourceMap.values()), knowledgeHit);
     }
 
-    private List<ChunkEmbedding> loadChunkEmbeddings() {
-        Path basePath = Path.of(knowledgeProperties.baseDir());
-        if (!Files.exists(basePath) || !Files.isDirectory(basePath)) {
-            throw new RuntimeException("知识库目录不存在: " + basePath);
+    public KnowledgeOverviewResponse inspectKnowledge() {
+        return buildKnowledgeOverview(false);
+    }
+
+    public KnowledgeOverviewResponse rebuildKnowledgeIndex() {
+        documentCache.clear();
+        return buildKnowledgeOverview(true);
+    }
+
+    private KnowledgeOverviewResponse buildKnowledgeOverview(boolean forceRebuild) {
+        List<Path> matchedFiles = listKnowledgeFiles();
+        int simpleLimit = Math.max(1, knowledgeProperties.maxFiles());
+        int vectorLimit = Math.max(1, vectorRagProperties.maxFiles());
+        int vectorChunkLimit = Math.max(1, vectorRagProperties.maxChunks());
+
+        List<KnowledgeFileItem> files = new ArrayList<>();
+        int totalVectorChunks = 0;
+        for (int index = 0; index < matchedFiles.size(); index++) {
+            Path path = matchedFiles.get(index);
+            boolean usedByVectorRag = index < vectorLimit;
+            int chunkCount = 0;
+            if (usedByVectorRag) {
+                CachedDocumentEmbeddings embeddings = forceRebuild
+                        ? rebuildDocumentEmbeddings(path)
+                        : loadOrBuildDocumentEmbeddings(path);
+                chunkCount = embeddings.chunks().size();
+                totalVectorChunks += chunkCount;
+            }
+
+            try {
+                files.add(new KnowledgeFileItem(
+                        path.getFileName().toString(),
+                        Files.size(path),
+                        TIME_FORMATTER.format(Instant.ofEpochMilli(Files.getLastModifiedTime(path).toMillis())),
+                        index < simpleLimit,
+                        usedByVectorRag,
+                        chunkCount
+                ));
+            } catch (IOException exception) {
+                throw new RuntimeException("读取知识库文件信息失败: " + path.getFileName(), exception);
+            }
         }
 
-        try (Stream<Path> pathStream = Files.list(basePath)) {
-            return pathStream
-                    .filter(Files::isRegularFile)
-                    .filter(path -> matchesPattern(path.getFileName().toString()))
-                    .sorted(Comparator.comparing(path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
-                    .limit(Math.max(1, vectorRagProperties.maxFiles()))
-                    .map(this::loadOrBuildDocumentEmbeddings)
-                    .flatMap(cached -> cached.chunks().stream())
-                    .limit(Math.max(1, vectorRagProperties.maxChunks()))
-                    .toList();
-        } catch (IOException exception) {
-            throw new RuntimeException("读取知识库文档失败: " + exception.getMessage(), exception);
-        }
+        return new KnowledgeOverviewResponse(
+                knowledgeProperties.baseDir(),
+                knowledgeProperties.filePattern(),
+                simpleLimit,
+                vectorLimit,
+                vectorChunkLimit,
+                matchedFiles.size(),
+                totalVectorChunks,
+                files
+        );
+    }
+
+    private List<ChunkEmbedding> loadChunkEmbeddings() {
+        return listKnowledgeFiles().stream()
+                .limit(Math.max(1, vectorRagProperties.maxFiles()))
+                .map(this::loadOrBuildDocumentEmbeddings)
+                .flatMap(cached -> cached.chunks().stream())
+                .limit(Math.max(1, vectorRagProperties.maxChunks()))
+                .toList();
     }
 
     private CachedDocumentEmbeddings loadOrBuildDocumentEmbeddings(Path path) {
+        return buildDocumentEmbeddings(path, false);
+    }
+
+    private CachedDocumentEmbeddings rebuildDocumentEmbeddings(Path path) {
+        return buildDocumentEmbeddings(path, true);
+    }
+
+    private CachedDocumentEmbeddings buildDocumentEmbeddings(Path path, boolean forceRebuild) {
         try {
             long lastModified = Files.getLastModifiedTime(path).toMillis();
             String cacheKey = path.toAbsolutePath().normalize().toString();
             CachedDocumentEmbeddings cached = documentCache.get(cacheKey);
-            if (cached != null && cached.lastModified() == lastModified) {
+            if (!forceRebuild && cached != null && cached.lastModified() == lastModified) {
                 return cached;
             }
 
@@ -133,6 +191,23 @@ public class VectorRagService {
             return rebuilt;
         } catch (IOException exception) {
             throw new RuntimeException("读取知识库文档失败: " + path.getFileName(), exception);
+        }
+    }
+
+    private List<Path> listKnowledgeFiles() {
+        Path basePath = Path.of(knowledgeProperties.baseDir());
+        if (!Files.exists(basePath) || !Files.isDirectory(basePath)) {
+            throw new RuntimeException("知识库目录不存在: " + basePath);
+        }
+
+        try (Stream<Path> pathStream = Files.list(basePath)) {
+            return pathStream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> matchesPattern(path.getFileName().toString()))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .toList();
+        } catch (IOException exception) {
+            throw new RuntimeException("读取知识库文档失败: " + exception.getMessage(), exception);
         }
     }
 

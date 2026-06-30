@@ -14,6 +14,59 @@ export interface AiRagResponse {
   knowledgeHit: boolean
 }
 
+export interface KnowledgeFileItem {
+  fileName: string
+  sizeBytes: number
+  lastModified: string
+  usedBySimpleRag: boolean
+  usedByVectorRag: boolean
+  chunkCount: number
+}
+
+export interface KnowledgeOverviewResponse {
+  baseDir: string
+  filePattern: string
+  simpleFileLimit: number
+  vectorFileLimit: number
+  vectorChunkLimit: number
+  totalMatchedFiles: number
+  totalVectorChunks: number
+  files: KnowledgeFileItem[]
+}
+
+export interface MarkdownCompareLine {
+  type: 'context' | 'add' | 'remove'
+  sourceLineNumber: number | null
+  targetLineNumber: number | null
+  content: string
+}
+
+export interface MarkdownCompareHunk {
+  sourceStartLine: number
+  targetStartLine: number
+  lines: MarkdownCompareLine[]
+}
+
+export interface MarkdownModifiedFileItem {
+  relativePath: string
+  sourceLineCount: number
+  targetLineCount: number
+  additions: number
+  deletions: number
+  hunks: MarkdownCompareHunk[]
+}
+
+export interface MarkdownCompareResponse {
+  sourceDir: string
+  targetDir: string
+  sourceFileCount: number
+  targetFileCount: number
+  unchangedCount: number
+  addedFiles: string[]
+  removedFiles: string[]
+  modifiedFiles: MarkdownModifiedFileItem[]
+}
+
 async function postJson<T>(url: string, payload: object): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
@@ -49,4 +102,26 @@ export async function aiRagSimple(question: string): Promise<AiRagResponse> {
 
 export async function aiRag(question: string): Promise<AiRagResponse> {
   return postJson<AiRagResponse>('/api/ai/rag', { question })
+}
+
+export async function fetchKnowledgeOverview(): Promise<KnowledgeOverviewResponse> {
+  const response = await fetch('/api/ai/knowledge')
+  if (!response.ok) {
+    throw new Error(response.statusText || '读取知识库状态失败')
+  }
+  return response.json() as Promise<KnowledgeOverviewResponse>
+}
+
+export async function reindexKnowledge(): Promise<KnowledgeOverviewResponse> {
+  return postJson<KnowledgeOverviewResponse>('/api/ai/knowledge/reindex', {})
+}
+
+export async function compareMarkdownDirectories(
+  sourceDir: string,
+  targetDir: string,
+): Promise<MarkdownCompareResponse> {
+  return postJson<MarkdownCompareResponse>('/api/tools/markdown/compare', {
+    sourceDir,
+    targetDir,
+  })
 }
