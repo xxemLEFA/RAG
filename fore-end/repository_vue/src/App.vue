@@ -4,18 +4,34 @@ import {
   aiChat,
   aiRag,
   aiRagSimple,
+  browseDirectory,
   compareMarkdownDirectories,
   fetchKnowledgeOverview,
   reindexKnowledge,
+  syncMarkdownFiles,
   type KnowledgeOverviewResponse,
   type MarkdownCompareLine,
   type MarkdownCompareResponse,
   type MarkdownModifiedFileItem,
+  type MarkdownSyncDestination,
   type RagSourceItem,
 } from './api/ai'
 
 type WorkspaceMode = 'rag' | 'markdown-compare'
 type ChatMode = 'chat' | 'rag-simple' | 'rag'
+
+interface SyncDialogState {
+  title: string
+  description: string
+  destination: MarkdownSyncDestination
+  relativePaths: string[]
+}
+
+interface PathDialogState {
+  target: 'source' | 'target'
+  title: string
+  value: string
+}
 
 const workspaceMode = ref<WorkspaceMode>('rag')
 
@@ -35,8 +51,15 @@ const sourceDir = ref('P:/AIprogect/work-sync-md')
 const targetDir = ref('P:/AIprogect/repository/fore-end/repository_vue/docs')
 const markdownCompareResult = ref<MarkdownCompareResponse | null>(null)
 const markdownCompareError = ref('')
+const markdownSyncMessage = ref('')
 const isComparingMarkdown = ref(false)
+const isSyncingMarkdown = ref(false)
+const activeDirectoryPicker = ref<'source' | 'target' | null>(null)
 const expandedFiles = ref<string[]>([])
+const selectedAddedFiles = ref<string[]>([])
+const selectedModifiedFiles = ref<string[]>([])
+const syncDialog = ref<SyncDialogState | null>(null)
+const pathDialog = ref<PathDialogState | null>(null)
 
 const totalMarkdownDifferences = computed(() => {
   const result = markdownCompareResult.value
@@ -44,6 +67,10 @@ const totalMarkdownDifferences = computed(() => {
     return 0
   }
   return result.addedFiles.length + result.removedFiles.length + result.modifiedFiles.length
+})
+
+const modifiedFilePathSet = computed(() => {
+  return new Set(markdownCompareResult.value?.modifiedFiles.map((item) => item.relativePath) ?? [])
 })
 
 function formatFileSize(sizeBytes: number) {
@@ -76,6 +103,48 @@ function toggleFileExpanded(relativePath: string) {
     return
   }
   expandedFiles.value = [...expandedFiles.value, relativePath]
+}
+
+function isAddedSelected(relativePath: string) {
+  return selectedAddedFiles.value.includes(relativePath)
+}
+
+function isModifiedSelected(relativePath: string) {
+  return selectedModifiedFiles.value.includes(relativePath)
+}
+
+function toggleAddedSelection(relativePath: string) {
+  selectedAddedFiles.value = isAddedSelected(relativePath)
+    ? selectedAddedFiles.value.filter((item) => item !== relativePath)
+    : [...selectedAddedFiles.value, relativePath]
+}
+
+function toggleModifiedSelection(relativePath: string) {
+  selectedModifiedFiles.value = isModifiedSelected(relativePath)
+    ? selectedModifiedFiles.value.filter((item) => item !== relativePath)
+    : [...selectedModifiedFiles.value, relativePath]
+}
+
+function selectAllAddedFiles() {
+  selectedAddedFiles.value = markdownCompareResult.value?.addedFiles.slice() ?? []
+}
+
+function clearAddedSelection() {
+  selectedAddedFiles.value = []
+}
+
+function selectAllModifiedFiles() {
+  selectedModifiedFiles.value = markdownCompareResult.value?.modifiedFiles.map((item) => item.relativePath) ?? []
+}
+
+function clearModifiedSelection() {
+  selectedModifiedFiles.value = []
+}
+
+function syncResultSelections(result: MarkdownCompareResponse) {
+  const addedSet = new Set(result.addedFiles)
+  selectedAddedFiles.value = selectedAddedFiles.value.filter((item) => addedSet.has(item))
+  selectedModifiedFiles.value = selectedModifiedFiles.value.filter((item) => modifiedFilePathSet.value.has(item))
 }
 
 async function loadKnowledgeOverview() {
@@ -149,18 +218,86 @@ async function handleCompareMarkdown() {
 
   isComparingMarkdown.value = true
   markdownCompareError.value = ''
+  markdownSyncMessage.value = ''
 
   try {
     const result = await compareMarkdownDirectories(trimmedSourceDir, trimmedTargetDir)
     markdownCompareResult.value = result
     expandedFiles.value = result.modifiedFiles.slice(0, 1).map((item) => item.relativePath)
+    syncResultSelections(result)
   } catch (error) {
     markdownCompareResult.value = null
     expandedFiles.value = []
+    selectedAddedFiles.value = []
+    selectedModifiedFiles.value = []
     markdownCompareError.value = error instanceof Error ? error.message : '目录对比失败'
   } finally {
     isComparingMarkdown.value = false
   }
+}
+
+async function pickDirectory(target: 'source' | 'target') {
+  if (activeDirectoryPicker.value) {
+    return
+  }
+
+  activeDirectoryPicker.value = target
+  markdownCompareError.value = ''
+
+  try {
+    const initialDir = target === 'source' ? sourceDir.value.trim() : targetDir.value.trim()
+    const response = await browseDirectory(
+      initialDir,
+      target === 'source' ? '选择来源目录' : '选择目标目录',
+    )
+
+    if (target === 'source') {
+      sourceDir.value = response.selectedDir
+    } else {
+      targetDir.value = response.selectedDir
+    }
+  } catch (error) {
+    markdownCompareError.value = error instanceof Error ? error.message : '打开目录选择框失败'
+  } finally {
+    activeDirectoryPicker.value = null
+  }
+}
+
+function openPathDialog(target: 'source' | 'target') {
+  pathDialog.value = {
+    target,
+    title: target === 'source' ? '输入来源目录' : '输入目标目录',
+    value: target === 'source' ? sourceDir.value : targetDir.value,
+  }
+}
+
+function closePathDialog() {
+  if (activeDirectoryPicker.value) {
+    return
+  }
+  pathDialog.value = null
+}
+
+function confirmPathDialog() {
+  const currentDialog = pathDialog.value
+  if (!currentDialog) {
+    return
+  }
+
+  const trimmedValue = currentDialog.value.trim()
+  if (!trimmedValue) {
+    markdownCompareError.value = '目录路径不能为空'
+    return
+  }
+
+  if (currentDialog.target === 'source') {
+    sourceDir.value = trimmedValue
+  } else {
+    targetDir.value = trimmedValue
+  }
+
+  markdownCompareError.value = ''
+  pathDialog.value = null
 }
 
 function addedSummaryLabel(result: MarkdownCompareResponse) {
@@ -177,6 +314,82 @@ function modifiedSummaryLabel(result: MarkdownCompareResponse) {
 
 function changeSummary(file: MarkdownModifiedFileItem) {
   return `+${file.additions} / -${file.deletions} · 源 ${file.sourceLineCount} 行 · 本地 ${file.targetLineCount} 行`
+}
+
+function openSyncDialogForAddedFiles() {
+  if (!selectedAddedFiles.value.length) {
+    markdownCompareError.value = '请先勾选要同步到本地目录的新增文件'
+    return
+  }
+
+  syncDialog.value = {
+    title: '确认同步新增文件',
+    description: `将把 ${selectedAddedFiles.value.length} 个来源目录中的新增文件复制到本地目录，并覆盖同名文件。`,
+    destination: 'target',
+    relativePaths: selectedAddedFiles.value.slice(),
+  }
+}
+
+function openSyncDialogForModifiedFiles(destination: MarkdownSyncDestination) {
+  if (!selectedModifiedFiles.value.length) {
+    markdownCompareError.value = '请先勾选要同步的内容变更文件'
+    return
+  }
+
+  syncDialog.value = {
+    title: destination === 'target' ? '确认用来源目录覆盖本地目录' : '确认用本地目录覆盖来源目录',
+    description:
+      destination === 'target'
+        ? `将把 ${selectedModifiedFiles.value.length} 个已修改文件从来源目录复制到本地目录。`
+        : `将把 ${selectedModifiedFiles.value.length} 个已修改文件从本地目录复制到来源目录。`,
+    destination,
+    relativePaths: selectedModifiedFiles.value.slice(),
+  }
+}
+
+function closeSyncDialog() {
+  if (isSyncingMarkdown.value) {
+    return
+  }
+  syncDialog.value = null
+}
+
+async function confirmSync() {
+  const currentDialog = syncDialog.value
+  if (!currentDialog || isSyncingMarkdown.value) {
+    return
+  }
+
+  isSyncingMarkdown.value = true
+  markdownCompareError.value = ''
+  markdownSyncMessage.value = ''
+
+  try {
+    const response = await syncMarkdownFiles(
+      sourceDir.value.trim(),
+      targetDir.value.trim(),
+      currentDialog.destination,
+      currentDialog.relativePaths,
+    )
+
+    syncDialog.value = null
+    markdownSyncMessage.value = `已同步 ${response.syncedFiles.length} 个文件到 ${response.copiedTo}`
+
+    if (currentDialog.destination === 'target') {
+      selectedAddedFiles.value = selectedAddedFiles.value.filter(
+        (item) => !currentDialog.relativePaths.includes(item),
+      )
+    }
+    selectedModifiedFiles.value = selectedModifiedFiles.value.filter(
+      (item) => !currentDialog.relativePaths.includes(item),
+    )
+
+    await handleCompareMarkdown()
+  } catch (error) {
+    markdownCompareError.value = error instanceof Error ? error.message : '同步失败'
+  } finally {
+    isSyncingMarkdown.value = false
+  }
 }
 
 onMounted(() => {
@@ -384,16 +597,46 @@ onMounted(() => {
 
       <div class="compare-form">
         <label class="field-label" for="sourceDir">下载目录 / 来源目录</label>
-        <input id="sourceDir" v-model="sourceDir" class="path-input" type="text" spellcheck="false" />
+        <div class="path-row">
+          <input id="sourceDir" v-model="sourceDir" class="path-input" type="text" spellcheck="false" />
+          <div class="path-button-group">
+            <button class="ghost-button path-button" type="button" @click="openPathDialog('source')">
+              输入路径
+            </button>
+            <button
+              class="ghost-button path-button"
+              type="button"
+              :disabled="!!activeDirectoryPicker"
+              @click="pickDirectory('source')"
+            >
+              {{ activeDirectoryPicker === 'source' ? '选择中...' : '选择文件夹' }}
+            </button>
+          </div>
+        </div>
 
         <label class="field-label" for="targetDir">本地目录 / 目标目录</label>
-        <input id="targetDir" v-model="targetDir" class="path-input" type="text" spellcheck="false" />
+        <div class="path-row">
+          <input id="targetDir" v-model="targetDir" class="path-input" type="text" spellcheck="false" />
+          <div class="path-button-group">
+            <button class="ghost-button path-button" type="button" @click="openPathDialog('target')">
+              输入路径
+            </button>
+            <button
+              class="ghost-button path-button"
+              type="button"
+              :disabled="!!activeDirectoryPicker"
+              @click="pickDirectory('target')"
+            >
+              {{ activeDirectoryPicker === 'target' ? '选择中...' : '选择文件夹' }}
+            </button>
+          </div>
+        </div>
 
         <div class="action-row">
           <button
             class="submit-button"
             type="button"
-            :disabled="isComparingMarkdown"
+            :disabled="isComparingMarkdown || isSyncingMarkdown"
             @click="handleCompareMarkdown"
           >
             {{ isComparingMarkdown ? '对比中...' : '开始对比 Markdown' }}
@@ -403,6 +646,7 @@ onMounted(() => {
       </div>
 
       <p v-if="markdownCompareError" class="error-text compare-error">{{ markdownCompareError }}</p>
+      <p v-if="markdownSyncMessage" class="success-text">{{ markdownSyncMessage }}</p>
 
       <template v-if="markdownCompareResult">
         <div class="compare-summary-grid">
@@ -434,8 +678,30 @@ onMounted(() => {
             <h2>来源目录新增</h2>
             <span class="source-count">{{ markdownCompareResult.addedFiles.length }} 个</span>
           </div>
-          <ul class="file-list">
-            <li v-for="file in markdownCompareResult.addedFiles" :key="file">{{ file }}</li>
+          <div class="section-actions">
+            <button class="ghost-button" type="button" @click="selectAllAddedFiles">全选</button>
+            <button class="ghost-button" type="button" @click="clearAddedSelection">清空</button>
+            <button
+              class="ghost-button strong"
+              type="button"
+              :disabled="!selectedAddedFiles.length || isSyncingMarkdown"
+              @click="openSyncDialogForAddedFiles"
+            >
+              同步到本地目录
+            </button>
+          </div>
+          <ul class="file-list selectable">
+            <li v-for="file in markdownCompareResult.addedFiles" :key="file">
+              <label class="file-check-row">
+                <input
+                  :checked="isAddedSelected(file)"
+                  class="file-checkbox"
+                  type="checkbox"
+                  @change="toggleAddedSelection(file)"
+                />
+                <span>{{ file }}</span>
+              </label>
+            </li>
           </ul>
         </div>
 
@@ -454,19 +720,49 @@ onMounted(() => {
             <h2>内容有变化的文件</h2>
             <span class="source-count">{{ markdownCompareResult.modifiedFiles.length }} 个</span>
           </div>
+          <div class="section-actions">
+            <button class="ghost-button" type="button" @click="selectAllModifiedFiles">全选</button>
+            <button class="ghost-button" type="button" @click="clearModifiedSelection">清空</button>
+            <button
+              class="ghost-button strong"
+              type="button"
+              :disabled="!selectedModifiedFiles.length || isSyncingMarkdown"
+              @click="openSyncDialogForModifiedFiles('target')"
+            >
+              用来源覆盖本地
+            </button>
+            <button
+              class="ghost-button"
+              type="button"
+              :disabled="!selectedModifiedFiles.length || isSyncingMarkdown"
+              @click="openSyncDialogForModifiedFiles('source')"
+            >
+              用本地覆盖来源
+            </button>
+          </div>
 
           <article
             v-for="file in markdownCompareResult.modifiedFiles"
             :key="file.relativePath"
             class="modified-item"
           >
-            <button class="modified-toggle" type="button" @click="toggleFileExpanded(file.relativePath)">
-              <span>
-                <strong>{{ file.relativePath }}</strong>
-                <span class="modified-meta">{{ changeSummary(file) }}</span>
-              </span>
-              <span class="toggle-indicator">{{ isFileExpanded(file.relativePath) ? '收起' : '展开' }}</span>
-            </button>
+            <div class="modified-heading">
+              <label class="file-check-row">
+                <input
+                  :checked="isModifiedSelected(file.relativePath)"
+                  class="file-checkbox"
+                  type="checkbox"
+                  @change="toggleModifiedSelection(file.relativePath)"
+                />
+                <span>
+                  <strong>{{ file.relativePath }}</strong>
+                  <span class="modified-meta">{{ changeSummary(file) }}</span>
+                </span>
+              </label>
+              <button class="inline-toggle" type="button" @click="toggleFileExpanded(file.relativePath)">
+                {{ isFileExpanded(file.relativePath) ? '收起差异' : '展开差异' }}
+              </button>
+            </div>
 
             <div v-if="isFileExpanded(file.relativePath)" class="hunk-list">
               <section v-for="(hunk, hunkIndex) in file.hunks" :key="hunkIndex" class="hunk-card">
@@ -493,5 +789,61 @@ onMounted(() => {
         </div>
       </template>
     </section>
+
+    <div v-if="syncDialog" class="modal-backdrop" @click.self="closeSyncDialog">
+      <section class="modal-card">
+        <p class="eyebrow small">Second Confirmation</p>
+        <h2>{{ syncDialog.title }}</h2>
+        <p class="modal-copy">{{ syncDialog.description }}</p>
+        <p class="modal-copy">
+          目标目录:
+          <code>{{ syncDialog.destination === 'target' ? targetDir.trim() : sourceDir.trim() }}</code>
+        </p>
+        <p class="modal-copy">
+          以下 {{ syncDialog.relativePaths.length }} 个文件会被复制并覆盖目标中的同名文件。
+        </p>
+        <ul class="modal-file-list">
+          <li v-for="file in syncDialog.relativePaths" :key="file">{{ file }}</li>
+        </ul>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" :disabled="isSyncingMarkdown" @click="closeSyncDialog">
+            取消
+          </button>
+          <button class="submit-button" type="button" :disabled="isSyncingMarkdown" @click="confirmSync">
+            {{ isSyncingMarkdown ? '同步中...' : '确认同步' }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="pathDialog" class="modal-backdrop" @click.self="closePathDialog">
+      <section class="modal-card compact">
+        <p class="eyebrow small">Path Input</p>
+        <h2>{{ pathDialog.title }}</h2>
+        <p class="modal-copy">可以直接粘贴完整目录路径，也可以继续使用系统文件夹选择器。</p>
+        <input
+          v-model="pathDialog.value"
+          class="path-input modal-path-input"
+          type="text"
+          spellcheck="false"
+          placeholder="例如：P:/AIprogect/知识库/测试/2006.6.30版本知识库"
+          @keydown.enter="confirmPathDialog"
+        />
+        <div class="modal-actions split">
+          <button class="ghost-button" type="button" :disabled="!!activeDirectoryPicker" @click="closePathDialog">
+            取消
+          </button>
+          <button
+            class="ghost-button"
+            type="button"
+            :disabled="!!activeDirectoryPicker"
+            @click="pickDirectory(pathDialog.target)"
+          >
+            {{ activeDirectoryPicker === pathDialog.target ? '选择中...' : '系统选择文件夹' }}
+          </button>
+          <button class="submit-button" type="button" @click="confirmPathDialog">确认使用这个路径</button>
+        </div>
+      </section>
+    </div>
   </main>
 </template>

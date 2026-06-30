@@ -1,12 +1,19 @@
 package com.repository.repositoryback.service;
 
 import com.repository.repositoryback.dto.MarkdownCompareResponse;
+import com.repository.repositoryback.dto.DirectoryBrowseResponse;
 import com.repository.repositoryback.dto.MarkdownDiffHunk;
 import com.repository.repositoryback.dto.MarkdownDiffLine;
 import com.repository.repositoryback.dto.MarkdownModifiedFileItem;
+import com.repository.repositoryback.dto.MarkdownSyncResponse;
 import org.springframework.stereotype.Service;
 
+import javax.swing.JFileChooser;
+import javax.swing.SwingUtilities;
 import java.io.IOException;
+import java.io.InputStream;
+import java.awt.GraphicsEnvironment;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -77,6 +84,153 @@ public class MarkdownCompareService {
         );
     }
 
+    public DirectoryBrowseResponse browseDirectory(String initialDir, String dialogTitle) {
+        if (!GraphicsEnvironment.isHeadless()) {
+            return browseDirectoryWithSwing(initialDir, dialogTitle);
+        }
+
+        if (isWindows()) {
+            return browseDirectoryWithPowerShell(initialDir, dialogTitle);
+        }
+
+        throw new IllegalStateException("当前运行环境不支持弹出目录选择框");
+    }
+
+    private DirectoryBrowseResponse browseDirectoryWithSwing(String initialDir, String dialogTitle) {
+        final String[] selectedPath = new String[1];
+        final RuntimeException[] error = new RuntimeException[1];
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    JFileChooser chooser = new JFileChooser();
+                    chooser.setDialogTitle(
+                            dialogTitle == null || dialogTitle.isBlank() ? "选择目录" : dialogTitle
+                    );
+                    chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+                    chooser.setMultiSelectionEnabled(false);
+                    chooser.setAcceptAllFileFilterUsed(false);
+
+                    Path initialPath = resolveInitialDirectory(initialDir);
+                    if (initialPath != null) {
+                        chooser.setCurrentDirectory(initialPath.toFile());
+                        chooser.setSelectedFile(initialPath.toFile());
+                    }
+
+                    int result = chooser.showOpenDialog(null);
+                    if (result != JFileChooser.APPROVE_OPTION || chooser.getSelectedFile() == null) {
+                        error[0] = new IllegalArgumentException("已取消目录选择");
+                        return;
+                    }
+
+                    selectedPath[0] = chooser.getSelectedFile().toPath().toAbsolutePath().normalize().toString();
+                } catch (RuntimeException exception) {
+                    error[0] = exception;
+                }
+            });
+        } catch (Exception exception) {
+            if (error[0] != null) {
+                throw error[0];
+            }
+            throw new RuntimeException("打开目录选择框失败", exception);
+        }
+
+        if (error[0] != null) {
+            throw error[0];
+        }
+        return new DirectoryBrowseResponse(selectedPath[0]);
+    }
+
+    private DirectoryBrowseResponse browseDirectoryWithPowerShell(String initialDir, String dialogTitle) {
+        Path initialPath = resolveInitialDirectory(initialDir);
+        String escapedTitle = escapePowerShellString(dialogTitle == null || dialogTitle.isBlank() ? "选择目录" : dialogTitle);
+        String escapedInitialPath = escapePowerShellString(initialPath == null ? "" : initialPath.toString());
+
+        String script = String.join("\n",
+                "Add-Type -AssemblyName System.Windows.Forms",
+                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+                "$dialog.Description = '" + escapedTitle + "'",
+                "$dialog.ShowNewFolderButton = $true",
+                "if ('" + escapedInitialPath + "' -ne '') { $dialog.SelectedPath = '" + escapedInitialPath + "' }",
+                "$result = $dialog.ShowDialog()",
+                "if ($result -ne [System.Windows.Forms.DialogResult]::OK -or [string]::IsNullOrWhiteSpace($dialog.SelectedPath)) {",
+                "  exit 2",
+                "}",
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+                "Write-Output $dialog.SelectedPath"
+        );
+
+        ProcessBuilder processBuilder = new ProcessBuilder(
+                "powershell.exe",
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                script
+        );
+
+        try {
+            Process process = processBuilder.start();
+            String stdout = readFully(process.getInputStream()).trim();
+            String stderr = readFully(process.getErrorStream()).trim();
+            int exitCode = process.waitFor();
+
+            if (exitCode == 0 && !stdout.isBlank()) {
+                return new DirectoryBrowseResponse(Path.of(stdout).toAbsolutePath().normalize().toString());
+            }
+            if (exitCode == 2) {
+                throw new IllegalArgumentException("已取消目录选择");
+            }
+
+            String detail = stderr.isBlank() ? stdout : stderr;
+            throw new RuntimeException(detail.isBlank() ? "打开目录选择框失败" : detail);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("打开目录选择框被中断", exception);
+        } catch (IOException exception) {
+            throw new RuntimeException("打开目录选择框失败", exception);
+        }
+    }
+
+    public MarkdownSyncResponse syncFiles(String sourceDir, String targetDir, String destination, List<String> relativePaths) {
+        Path sourcePath = validateDirectory(sourceDir, "源目录");
+        Path targetPath = validateDirectory(targetDir, "对比目录");
+
+        SyncPlan syncPlan = resolveSyncPlan(sourcePath, targetPath, destination);
+        List<String> syncedFiles = new ArrayList<>();
+
+        for (String relativePath : relativePaths) {
+            Path normalizedRelativePath = normalizeRelativePath(relativePath);
+            Path sourceFile = syncPlan.copyFrom().resolve(normalizedRelativePath).normalize();
+            Path destinationFile = syncPlan.copyTo().resolve(normalizedRelativePath).normalize();
+
+            ensureWithinRoot(sourceFile, syncPlan.copyFrom(), "同步来源");
+            ensureWithinRoot(destinationFile, syncPlan.copyTo(), "同步目标");
+
+            if (!Files.exists(sourceFile) || !Files.isRegularFile(sourceFile)) {
+                throw new IllegalArgumentException("同步来源缺少文件: " + relativePath);
+            }
+
+            try {
+                Path parent = destinationFile.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                Files.copy(sourceFile, destinationFile, StandardCopyOption.REPLACE_EXISTING);
+                syncedFiles.add(toRelativePath(syncPlan.copyTo(), destinationFile));
+            } catch (IOException exception) {
+                throw new RuntimeException("同步文件失败: " + relativePath, exception);
+            }
+        }
+
+        return new MarkdownSyncResponse(
+                sourcePath.toString(),
+                targetPath.toString(),
+                syncPlan.copyFrom().toString(),
+                syncPlan.copyTo().toString(),
+                syncedFiles
+        );
+    }
+
     private Path validateDirectory(String directory, String label) {
         if (directory == null || directory.isBlank()) {
             throw new IllegalArgumentException(label + "不能为空");
@@ -90,6 +244,45 @@ public class MarkdownCompareService {
             throw new IllegalArgumentException(label + "不是目录: " + path);
         }
         return path;
+    }
+
+    private SyncPlan resolveSyncPlan(Path sourcePath, Path targetPath, String destination) {
+        if ("source".equalsIgnoreCase(destination)) {
+            return new SyncPlan(targetPath, sourcePath);
+        }
+        if ("target".equalsIgnoreCase(destination)) {
+            return new SyncPlan(sourcePath, targetPath);
+        }
+        throw new IllegalArgumentException("同步目标只能是 source 或 target");
+    }
+
+    private Path resolveInitialDirectory(String initialDir) {
+        if (initialDir == null || initialDir.isBlank()) {
+            return null;
+        }
+
+        Path path = Path.of(initialDir).toAbsolutePath().normalize();
+        if (Files.isDirectory(path)) {
+            return path;
+        }
+
+        Path parent = path.getParent();
+        if (parent != null && Files.isDirectory(parent)) {
+            return parent;
+        }
+        return null;
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private String escapePowerShellString(String value) {
+        return value.replace("'", "''");
+    }
+
+    private String readFully(InputStream inputStream) throws IOException {
+        return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private Map<String, Path> listMarkdownFiles(Path directory) {
@@ -112,6 +305,27 @@ public class MarkdownCompareService {
 
     private String toRelativePath(Path root, Path file) {
         return root.relativize(file).toString().replace('\\', '/');
+    }
+
+    private Path normalizeRelativePath(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            throw new IllegalArgumentException("文件路径不能为空");
+        }
+        Path normalized = Path.of(relativePath).normalize();
+        if (normalized.isAbsolute() || normalized.startsWith("..")) {
+            throw new IllegalArgumentException("文件路径不合法: " + relativePath);
+        }
+        String fileName = normalized.getFileName() == null ? "" : normalized.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (!fileName.endsWith(".md")) {
+            throw new IllegalArgumentException("只允许同步 Markdown 文件: " + relativePath);
+        }
+        return normalized;
+    }
+
+    private void ensureWithinRoot(Path path, Path root, String label) {
+        if (!path.startsWith(root)) {
+            throw new IllegalArgumentException(label + "路径越界: " + path);
+        }
     }
 
     private FileLines readLines(Path file, String relativePath, String label) {
@@ -272,6 +486,9 @@ public class MarkdownCompareService {
     }
 
     private record FileLines(String normalizedContent, List<String> lines) {
+    }
+
+    private record SyncPlan(Path copyFrom, Path copyTo) {
     }
 
     private record DiffEntry(DiffType type, String content, Integer sourceLineNumber, Integer targetLineNumber) {

@@ -2,6 +2,7 @@ package com.repository.repositoryback.service;
 
 import com.repository.repositoryback.dto.MarkdownCompareResponse;
 import com.repository.repositoryback.dto.MarkdownModifiedFileItem;
+import com.repository.repositoryback.dto.MarkdownSyncResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -53,6 +54,28 @@ class MarkdownCompareServiceTest {
         assertFalse(modified.hunks().isEmpty());
         assertTrue(modified.hunks().get(0).lines().stream().anyMatch(line -> "remove".equals(line.type())));
         assertTrue(modified.hunks().get(0).lines().stream().anyMatch(line -> "add".equals(line.type())));
+    }
+
+    @Test
+    void syncsSelectedMarkdownFilesIntoTargetDirectory() throws IOException {
+        Path sourceDir = Files.createDirectory(tempDir.resolve("sync-source"));
+        Path targetDir = Files.createDirectory(tempDir.resolve("sync-target"));
+
+        Files.createDirectories(sourceDir.resolve("nested"));
+        write(sourceDir.resolve("added.md"), "added from source\n");
+        write(sourceDir.resolve("nested/doc.md"), "latest content\n");
+        write(targetDir.resolve("nested/doc.md"), "old content\n");
+
+        MarkdownSyncResponse response = service.syncFiles(
+                sourceDir.toString(),
+                targetDir.toString(),
+                "target",
+                java.util.List.of("added.md", "nested/doc.md")
+        );
+
+        assertIterableEquals(java.util.List.of("added.md", "nested/doc.md"), response.syncedFiles());
+        assertEquals("added from source\n", Files.readString(targetDir.resolve("added.md")));
+        assertEquals("latest content\n", Files.readString(targetDir.resolve("nested/doc.md")));
     }
 
     private void write(Path path, String content) throws IOException {

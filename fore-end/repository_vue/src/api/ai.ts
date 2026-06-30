@@ -67,6 +67,20 @@ export interface MarkdownCompareResponse {
   modifiedFiles: MarkdownModifiedFileItem[]
 }
 
+export type MarkdownSyncDestination = 'source' | 'target'
+
+export interface MarkdownSyncResponse {
+  sourceDir: string
+  targetDir: string
+  copiedFrom: string
+  copiedTo: string
+  syncedFiles: string[]
+}
+
+export interface DirectoryBrowseResponse {
+  selectedDir: string
+}
+
 async function postJson<T>(url: string, payload: object): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
@@ -123,5 +137,29 @@ export async function compareMarkdownDirectories(
   return postJson<MarkdownCompareResponse>('/api/tools/markdown/compare', {
     sourceDir,
     targetDir,
+  })
+}
+
+export async function syncMarkdownFiles(
+  sourceDir: string,
+  targetDir: string,
+  destination: MarkdownSyncDestination,
+  relativePaths: string[],
+): Promise<MarkdownSyncResponse> {
+  return postJson<MarkdownSyncResponse>('/api/tools/markdown/sync', {
+    sourceDir,
+    targetDir,
+    destination,
+    relativePaths,
+  })
+}
+
+export async function browseDirectory(
+  initialDir: string,
+  dialogTitle: string,
+): Promise<DirectoryBrowseResponse> {
+  return postJson<DirectoryBrowseResponse>('/api/tools/markdown/browse-directory', {
+    initialDir,
+    dialogTitle,
   })
 }
