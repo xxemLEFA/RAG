@@ -8,10 +8,18 @@ export interface RagSourceItem {
   score: number | null
 }
 
+export interface RagMatchItem {
+  fileName: string
+  chunkIndex: number
+  content: string
+  score: number | null
+}
+
 export interface AiRagResponse {
   answer: string
   sources: RagSourceItem[]
   knowledgeHit: boolean
+  matches: RagMatchItem[]
 }
 
 export interface KnowledgeFileItem {

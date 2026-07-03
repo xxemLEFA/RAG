@@ -6,6 +6,7 @@ import com.repository.repositoryback.dto.AiRagResponse;
 import com.repository.repositoryback.dto.KnowledgeFileItem;
 import com.repository.repositoryback.dto.KnowledgeOverviewResponse;
 import com.repository.repositoryback.dto.QdrantCollectionStatus;
+import com.repository.repositoryback.dto.RagMatchItem;
 import com.repository.repositoryback.dto.RagSourceItem;
 import org.springframework.stereotype.Service;
 
@@ -133,9 +134,17 @@ public class VectorRagService {
                     )
             );
         }
+        List<RagMatchItem> matchItems = matches.stream()
+                .map(match -> new RagMatchItem(
+                        match.fileName(),
+                        match.chunkIndex(),
+                        match.content(),
+                        roundScore(match.score())
+                ))
+                .toList();
 
         boolean knowledgeHit = !answer.contains(NO_KNOWLEDGE_ANSWER);
-        return new AiRagResponse(answer, new ArrayList<>(sourceMap.values()), knowledgeHit);
+        return new AiRagResponse(answer, new ArrayList<>(sourceMap.values()), knowledgeHit, matchItems);
     }
 
     private KnowledgeOverviewResponse buildKnowledgeOverview(boolean forceRebuild) {

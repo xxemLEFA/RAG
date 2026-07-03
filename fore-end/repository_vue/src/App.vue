@@ -9,6 +9,7 @@ import {
   fetchKnowledgeOverview,
   reindexKnowledge,
   syncMarkdownFiles,
+  type RagMatchItem,
   type KnowledgeOverviewResponse,
   type MarkdownCompareLine,
   type MarkdownCompareResponse,
@@ -40,6 +41,7 @@ const answer = ref('等待提问')
 const errorMessage = ref('')
 const isLoading = ref(false)
 const sources = ref<RagSourceItem[]>([])
+const matches = ref<RagMatchItem[]>([])
 const mode = ref<ChatMode>('rag')
 const knowledgeHit = ref<boolean | null>(null)
 const knowledgeOverview = ref<KnowledgeOverviewResponse | null>(null)
@@ -73,6 +75,8 @@ const modifiedFilePathSet = computed(() => {
   return new Set(markdownCompareResult.value?.modifiedFiles.map((item) => item.relativePath) ?? [])
 })
 
+const answerHtml = computed(() => renderMarkdown(answer.value))
+
 function formatFileSize(sizeBytes: number) {
   if (sizeBytes < 1024) {
     return `${sizeBytes} B`
@@ -81,6 +85,99 @@ function formatFileSize(sizeBytes: number) {
     return `${(sizeBytes / 1024).toFixed(1)} KB`
   }
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function renderInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
+
+function renderMarkdown(value: string) {
+  const normalized = value.replaceAll('\r\n', '\n').trim()
+  if (!normalized) {
+    return '<p>等待提问</p>'
+  }
+
+  const lines = normalized.split('\n')
+  const htmlParts: string[] = []
+  let paragraphLines: string[] = []
+  let listItems: string[] = []
+  let listType: 'ul' | 'ol' | null = null
+
+  function flushParagraph() {
+    if (!paragraphLines.length) {
+      return
+    }
+    htmlParts.push(`<p>${paragraphLines.map(renderInlineMarkdown).join('<br />')}</p>`)
+    paragraphLines = []
+  }
+
+  function flushList() {
+    if (!listItems.length || !listType) {
+      return
+    }
+    htmlParts.push(`<${listType}>${listItems.join('')}</${listType}>`)
+    listItems = []
+    listType = null
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+
+    if (!line) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
+    if (headingMatch) {
+      flushParagraph()
+      flushList()
+      const level = headingMatch[1].length
+      htmlParts.push(`<h${level + 2}>${renderInlineMarkdown(headingMatch[2])}</h${level + 2}>`)
+      continue
+    }
+
+    const orderedMatch = line.match(/^\d+\.\s+(.*)$/)
+    if (orderedMatch) {
+      flushParagraph()
+      if (listType && listType !== 'ol') {
+        flushList()
+      }
+      listType = 'ol'
+      listItems.push(`<li>${renderInlineMarkdown(orderedMatch[1])}</li>`)
+      continue
+    }
+
+    const unorderedMatch = line.match(/^[-*]\s+(.*)$/)
+    if (unorderedMatch) {
+      flushParagraph()
+      if (listType && listType !== 'ul') {
+        flushList()
+      }
+      listType = 'ul'
+      listItems.push(`<li>${renderInlineMarkdown(unorderedMatch[1])}</li>`)
+      continue
+    }
+
+    flushList()
+    paragraphLines.push(line)
+  }
+
+  flushParagraph()
+  flushList()
+  return htmlParts.join('')
 }
 
 function formatDiffLinePrefix(line: MarkdownCompareLine) {
@@ -186,6 +283,7 @@ async function submitQuestion() {
   isLoading.value = true
   errorMessage.value = ''
   sources.value = []
+  matches.value = []
   knowledgeHit.value = null
 
   try {
@@ -200,6 +298,7 @@ async function submitQuestion() {
       mode.value === 'rag' ? await aiRag(trimmedQuestion) : await aiRagSimple(trimmedQuestion)
     answer.value = response.answer
     sources.value = response.sources
+    matches.value = response.matches
     knowledgeHit.value = response.knowledgeHit
   } catch (error) {
     answer.value = '当前没有拿到模型回复。'
@@ -511,7 +610,7 @@ onMounted(() => {
             {{ knowledgeHit ? '命中知识库' : '未命中知识库' }}
           </span>
         </div>
-        <p class="result-text">{{ answer }}</p>
+        <div class="result-text markdown-body" v-html="answerHtml" />
         <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
       </div>
 
@@ -527,6 +626,27 @@ onMounted(() => {
               <span v-if="source.score !== null" class="source-score">score {{ source.score }}</span>
             </p>
             <p class="source-snippet">{{ source.snippet }}</p>
+          </li>
+          </ol>
+        </div>
+
+      <div v-if="mode !== 'chat' && matches.length" class="source-card">
+        <div class="result-header">
+          <h2>检索命中明细</h2>
+          <span class="source-count">top {{ matches.length }}</span>
+        </div>
+        <ol class="source-list">
+          <li
+            v-for="match in matches"
+            :key="`${match.fileName}#${match.chunkIndex}`"
+            class="source-item"
+          >
+            <p class="source-file">
+              {{ match.fileName }}
+              <span class="source-score">chunk #{{ match.chunkIndex }}</span>
+              <span v-if="match.score !== null" class="source-score">score {{ match.score }}</span>
+            </p>
+            <p class="source-snippet">{{ match.content }}</p>
           </li>
         </ol>
       </div>

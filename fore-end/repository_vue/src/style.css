@@ -294,6 +294,49 @@ h2 {
   word-break: break-word;
 }
 
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6,
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0;
+}
+
+.markdown-body p + p,
+.markdown-body p + ul,
+.markdown-body p + ol,
+.markdown-body ul + p,
+.markdown-body ol + p,
+.markdown-body ul + ul,
+.markdown-body ol + ol,
+.markdown-body h3 + p,
+.markdown-body h4 + p,
+.markdown-body h3 + ul,
+.markdown-body h4 + ol {
+  margin-top: 12px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4rem;
+}
+
+.markdown-body li + li {
+  margin-top: 6px;
+}
+
+.markdown-body strong {
+  font-weight: 800;
+}
+
+.markdown-body code {
+  padding: 0.1rem 0.38rem;
+  border-radius: 8px;
+  background: rgba(12, 70, 53, 0.08);
+}
+
 .error-badge,
 .hit-badge,
 .source-count,

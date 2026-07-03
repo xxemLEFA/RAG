@@ -2,6 +2,7 @@ package com.repository.repositoryback.service;
 
 import com.repository.repositoryback.config.KnowledgeProperties;
 import com.repository.repositoryback.dto.AiRagResponse;
+import com.repository.repositoryback.dto.RagMatchItem;
 import com.repository.repositoryback.dto.RagSourceItem;
 import org.springframework.stereotype.Service;
 
@@ -45,9 +46,12 @@ public class SimpleRagService {
         List<RagSourceItem> sources = documents.stream()
                 .map(document -> new RagSourceItem(document.fileName(), document.snippet(), null))
                 .toList();
+        List<RagMatchItem> matches = documents.stream()
+                .map(document -> new RagMatchItem(document.fileName(), 1, document.content(), null))
+                .toList();
 
         boolean knowledgeHit = !answer.contains(NO_KNOWLEDGE_ANSWER);
-        return new AiRagResponse(answer, sources, knowledgeHit);
+        return new AiRagResponse(answer, sources, knowledgeHit, matches);
     }
 
     private List<KnowledgeDocument> loadKnowledgeDocuments() {
