@@ -23,14 +23,27 @@ export interface KnowledgeFileItem {
   chunkCount: number
 }
 
+export interface QdrantCollectionStatus {
+  enabled: boolean
+  baseUrl: string
+  collectionName: string
+  collectionExists: boolean
+  indexedPoints: number | null
+  statusMessage: string
+}
+
 export interface KnowledgeOverviewResponse {
   baseDir: string
   filePattern: string
+  vectorBackend: string
   simpleFileLimit: number
   vectorFileLimit: number
   vectorChunkLimit: number
   totalMatchedFiles: number
   totalVectorChunks: number
+  effectiveVectorChunks: number
+  vectorChunkLimitReached: boolean
+  qdrantStatus: QdrantCollectionStatus | null
   files: KnowledgeFileItem[]
 }
 

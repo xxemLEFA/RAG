@@ -557,13 +557,35 @@ onMounted(() => {
         <p v-if="knowledgeOverview" class="knowledge-meta">
           当前目录 <code>{{ knowledgeOverview.baseDir }}</code>，共匹配
           {{ knowledgeOverview.totalMatchedFiles }} 个文件。向量模式当前使用前
-          {{ knowledgeOverview.vectorFileLimit }} 个文件，累计
-          {{ knowledgeOverview.totalVectorChunks }} 个 chunk。
+          {{ knowledgeOverview.vectorFileLimit }} 个文件，总共切出
+          {{ knowledgeOverview.totalVectorChunks }} 个 chunk，实际参与检索的是全部
+          {{ knowledgeOverview.effectiveVectorChunks }} 个 chunk。
+        </p>
+        <p v-if="knowledgeOverview" class="knowledge-meta secondary">
+          当前向量检索后端 <code>{{ knowledgeOverview.vectorBackend }}</code>
+          <template v-if="knowledgeOverview.qdrantStatus?.enabled">
+            ，collection <code>{{ knowledgeOverview.qdrantStatus.collectionName }}</code>
+            <span v-if="knowledgeOverview.qdrantStatus.indexedPoints !== null">
+              ，当前已入库 {{ knowledgeOverview.qdrantStatus.indexedPoints }} 个 point
+            </span>
+          </template>
         </p>
         <p v-if="knowledgeOverview" class="knowledge-meta secondary">
           文件规则 <code>{{ knowledgeOverview.filePattern }}</code>，固定文档上限
-          {{ knowledgeOverview.simpleFileLimit }}，向量 chunk 上限
+          {{ knowledgeOverview.simpleFileLimit }}，向量 chunk 参考阈值
           {{ knowledgeOverview.vectorChunkLimit }}。
+        </p>
+        <p
+          v-if="knowledgeOverview?.qdrantStatus?.enabled"
+          class="knowledge-meta secondary"
+        >
+          Qdrant 状态：{{ knowledgeOverview.qdrantStatus.statusMessage }}
+        </p>
+        <p
+          v-if="knowledgeOverview?.vectorChunkLimitReached"
+          class="knowledge-warning"
+        >
+          当前总 chunk 数已经超过配置阈值，但检索会继续覆盖全部 chunk。这个值现在只用于提醒你关注性能，不再按文件顺序截断检索。
         </p>
         <p v-if="knowledgeError" class="error-text">{{ knowledgeError }}</p>
 

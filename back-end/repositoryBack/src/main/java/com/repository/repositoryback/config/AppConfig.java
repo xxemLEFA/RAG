@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.client.RestClient;
 
 @Configuration
-@EnableConfigurationProperties({OllamaProperties.class, KnowledgeProperties.class, VectorRagProperties.class})
+@EnableConfigurationProperties({OllamaProperties.class, KnowledgeProperties.class, VectorRagProperties.class, QdrantProperties.class})
 public class AppConfig {
 
     @Bean

@@ -56,13 +56,13 @@ public class SimpleRagService {
             throw new RuntimeException("知识库目录不存在: " + basePath);
         }
 
-        try (Stream<Path> pathStream = Files.list(basePath)) {
+        try (Stream<Path> pathStream = Files.walk(basePath)) {
             return pathStream
                     .filter(Files::isRegularFile)
                     .filter(path -> matchesPattern(path.getFileName().toString()))
-                    .sorted(Comparator.comparing(path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .sorted(Comparator.comparing(path -> toRelativePath(basePath, path), String.CASE_INSENSITIVE_ORDER))
                     .limit(Math.max(1, knowledgeProperties.maxFiles()))
-                    .map(this::readKnowledgeDocument)
+                    .map(path -> readKnowledgeDocument(basePath, path))
                     .toList();
         } catch (IOException exception) {
             throw new RuntimeException("读取知识库文档失败: " + exception.getMessage(), exception);
@@ -80,7 +80,7 @@ public class SimpleRagService {
         return fileName.equalsIgnoreCase(pattern);
     }
 
-    private KnowledgeDocument readKnowledgeDocument(Path path) {
+    private KnowledgeDocument readKnowledgeDocument(Path basePath, Path path) {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8).trim();
             if (content.isEmpty()) {
@@ -90,10 +90,14 @@ public class SimpleRagService {
             String normalized = content.replace("\r\n", "\n");
             String excerpt = limitLength(normalized, knowledgeProperties.maxCharsPerFile());
             String snippet = limitLength(normalized.replace('\n', ' '), 280);
-            return new KnowledgeDocument(path.getFileName().toString(), excerpt, snippet);
+            return new KnowledgeDocument(toRelativePath(basePath, path), excerpt, snippet);
         } catch (IOException exception) {
             throw new RuntimeException("读取知识库文档失败: " + path.getFileName(), exception);
         }
+    }
+
+    private String toRelativePath(Path basePath, Path path) {
+        return basePath.relativize(path).toString().replace('\\', '/');
     }
 
     private String buildSystemPrompt() {
